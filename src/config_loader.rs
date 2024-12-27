@@ -5,12 +5,18 @@ use std::fs;
 pub struct Config {
     pub source: String,
     pub database: DatabaseConfig,
+    pub tracking: TrackingConfig, // Add this line
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DatabaseConfig {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Debug, Deserialize)] // Add this struct
+pub struct TrackingConfig {
+    pub enabled: bool,
 }
 
 impl Config {

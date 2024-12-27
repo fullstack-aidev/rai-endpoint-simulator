@@ -2,3 +2,5 @@ source: database # file or database
 database:
   username: simulator_app
   password: your_password
+tracking:
+  enabled: false

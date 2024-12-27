@@ -35,6 +35,20 @@ pub fn select_random_response(content: &str) -> String {
     formatted_response.replace("\\n", "\n")
 }
 
+pub(crate) fn format_response_from_db(response: &ResponseSimulator) -> String {
+    info!("Formatting response from database");
+    let mut formatted_response = format!(
+        "**Pertanyaan:**\n{}\n\n**Jawaban:**\n{}",
+        response.pertanyaan, response.jawaban
+    );
+
+    if !response.referensi.is_empty() {
+        formatted_response.push_str(&format!("\n\n**Referensi:**\n{}", response.referensi));
+    }
+
+    formatted_response.replace("\\n", "\n")
+}
+
 pub fn select_random_response_from_db(responses: &[ResponseSimulator]) -> &ResponseSimulator {
     info!("Selecting random response from database");
     let mut rng = rand::thread_rng();
