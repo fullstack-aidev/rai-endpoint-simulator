@@ -137,7 +137,7 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
         error!("Failed to send final chunk: {}", combined_final_chunk);
         return;
     } else {
-        debug!("Sent final chunk: {}", combined_final_chunk);
+        info!("Sent final chunk: {}", combined_final_chunk);
     }
 
     if tx.send("data: [DONE]".to_string()).await.is_err() {
