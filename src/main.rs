@@ -103,9 +103,9 @@ async fn chat_completions() -> Result<HttpResponse, CustomError> {
             return Err(CustomError::InvalidSource);
         }
     };
-
-    //debug!("Responses: {:?}", responses);
-
+    if CONFIG.tracking.enabled == true {
+        debug!("All response record in DB : {:?}", responses);
+    }
     if responses.is_empty() {
         error!("No responses available");
         return Err(CustomError::FetchError);
