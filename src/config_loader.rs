@@ -5,7 +5,8 @@ use std::fs;
 pub struct Config {
     pub source: String,
     pub database: DatabaseConfig,
-    pub tracking: TrackingConfig, // Add this line
+    pub tracking: TrackingConfig,
+    pub log_level: String,
 }
 
 #[derive(Debug, Deserialize)]

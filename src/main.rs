@@ -137,8 +137,17 @@ async fn chat_completions() -> Result<HttpResponse, CustomError> {
 
 #[actix_web::main]
 async fn main() -> Result<(), CustomError> {
+    let log_level = match CONFIG.log_level.as_str() {
+        "trace" => log::LevelFilter::Trace,
+        "debug" => log::LevelFilter::Debug,
+        "info" => log::LevelFilter::Info,
+        "warn" => log::LevelFilter::Warn,
+        "error" => log::LevelFilter::Error,
+        _ => log::LevelFilter::Info,
+    };
+
     Builder::new()
-        .filter(None, log::LevelFilter::Debug)
+        .filter(None, log_level)
         .init();
     info!("Starting server at http://127.0.0.1:4545");
 

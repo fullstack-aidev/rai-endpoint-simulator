@@ -4,3 +4,4 @@ database:
   password: your_password
 tracking:
   enabled: false
+log_level: info
