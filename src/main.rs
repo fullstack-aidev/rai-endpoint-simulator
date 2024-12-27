@@ -78,8 +78,10 @@ async fn fetch_responses() -> Result<Vec<ResponseSimulator>, CustomError> {
     }
 
     info!("Fetched {} records from response_simulator table", records.len());
-    for record in &records {
-        info!("{:?}", record);
+    if CONFIG.tracking.enabled == true {
+        for record in &records {
+            debug!("{:?}", record);
+        }
     }
 
     Ok(records)
