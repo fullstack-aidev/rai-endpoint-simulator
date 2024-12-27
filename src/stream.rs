@@ -6,6 +6,7 @@ use log::{info, debug, error};
 use rand::Rng;
 use serde::Serialize;
 use std::time::Duration;
+use crate::CONFIG;
 
 #[derive(Serialize)]
 struct Chunk {
@@ -100,7 +101,9 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
             error!("Failed to send chunk: {}", combined_chunk);
             break;
         } else {
-            debug!("Sent chunk: {}", combined_chunk);
+            if CONFIG.tracking.enabled == true {
+                debug!("Sent chunk: {}", combined_chunk);
+            }
         }
 
         sleep(Duration::from_millis(100)).await;
