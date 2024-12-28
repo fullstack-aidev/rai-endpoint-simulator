@@ -1,8 +1,6 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read};
-use rand::Rng;
-use serde_json::Value;
-use log::{info};
+use log::info;
 use rand::seq::SliceRandom;
 use crate::ResponseSimulator;
 
@@ -14,25 +12,16 @@ pub fn read_file_content(file_path: &str) -> io::Result<String> {
     Ok(content)
 }
 
-pub fn select_random_response(content: &str) -> String {
-    info!("Selecting random response from content");
-    let json: Value = serde_json::from_str(content).expect("Invalid JSON format");
-    let responses = json.as_array().expect("Expected an array of responses");
+pub fn read_random_markdown_file(folder_path: &str) -> io::Result<String> {
+    let paths = fs::read_dir(folder_path)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().map_or(false, |ext| ext == "md"))
+        .collect::<Vec<_>>();
+
     let mut rng = rand::thread_rng();
-    let random_index = rng.gen_range(0..responses.len());
-    let response = &responses[random_index];
+    let random_file = paths.choose(&mut rng).expect("No markdown files found");
 
-    let question = response["pertanyaan"].as_str().expect("Expected a string for pertanyaan");
-    let answer = response["jawaban"].as_str().expect("Expected a string for jawaban");
-
-    let mut formatted_response = format!("**Pertanyaan:**\n{}\n\n**Jawaban:**\n{}", question, answer);
-
-    if let Some(references) = response.get("referensi") {
-        let references_str = references.as_str().expect("Expected a string for referensi");
-        formatted_response.push_str(&format!("\n\n**Referensi:**\n{}", references_str));
-    }
-
-    formatted_response.replace("\\n", "\n")
+    read_file_content(random_file.path().to_str().unwrap())
 }
 
 pub(crate) fn format_response_from_db(response: &ResponseSimulator) -> String {

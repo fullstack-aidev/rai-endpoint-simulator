@@ -1,23 +1,21 @@
-mod response;
 mod stream;
+mod response;
 mod config_loader;
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use actix_web::{web, App, HttpResponse, HttpServer, middleware::Logger, ResponseError};
+use tokio::sync::Semaphore;
+use futures_util::StreamExt; // Import StreamExt trait
+use log::{info, debug, error};
+use clickhouse::{Client, Row};
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
-use clickhouse::{Client, Row};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client as HyperClient;
-use hyper_util::rt::TokioExecutor;
-use futures_util::StreamExt;
-use log::{info, debug, error};
-use once_cell::sync::Lazy;
-use env_logger::Builder;
 use uuid::Uuid;
-use crate::response::{select_random_response, select_random_response_from_db, format_response_from_db};
+use crate::response::{select_random_response_from_db, format_response_from_db, read_random_markdown_file};
 use crate::stream::openai_simulator;
 use crate::config_loader::Config;
+use env_logger::Builder;
+use once_cell::sync::Lazy;
 
 #[derive(Debug, Display)]
 enum CustomError {
@@ -37,8 +35,8 @@ impl From<clickhouse::error::Error> for CustomError {
 
 #[derive(Row, Deserialize, Serialize, Debug, Clone)]
 struct ResponseSimulator {
-    #[serde(with = "clickhouse::serde::uuid")]
-    qa_id: Uuid,
+    #[serde(default, with = "clickhouse::serde::uuid::option")]
+    qa_id: Option<Uuid>,
     pertanyaan: String,
     jawaban: String,
     referensi: String,
@@ -46,31 +44,14 @@ struct ResponseSimulator {
 
 static CONFIG: Lazy<Config> = Lazy::new(|| Config::load());
 
-static CLIENT: Lazy<Client> = Lazy::new(|| {
-    debug!("Initializing ClickHouse client");
-    debug!("Username: {}", CONFIG.database.username);
-    debug!("Password: {}", CONFIG.database.password);
-
-    let connector = HttpConnector::new();
-    let hyper_client = HyperClient::builder(TokioExecutor::new())
-        .pool_idle_timeout(Duration::from_millis(2_500))
-        .pool_max_idle_per_host(4)
-        .build(connector);
-
-    Client::with_http_client(hyper_client)
-        .with_url("http://localhost:8123")
-        .with_database("midai_simulator")
-        .with_user(CONFIG.database.username.clone())
-        .with_password(CONFIG.database.password.clone())
-});
-
-async fn fetch_responses() -> Result<Vec<ResponseSimulator>, CustomError> {
+async fn fetch_responses(client: Arc<Mutex<Client>>) -> Result<Vec<ResponseSimulator>, CustomError> {
     info!("Attempting to fetch responses from the database");
 
     let query = "SELECT qa_id, pertanyaan, jawaban, referensi FROM response_simulator";
     debug!("Executing query: {}", query);
 
-    let mut cursor = CLIENT.query(query).fetch::<ResponseSimulator>()?;
+    let client = client.lock().unwrap();
+    let mut cursor = client.query(query).fetch::<ResponseSimulator>()?;
 
     let mut records = Vec::new();
     while let Ok(Some(row)) = cursor.next().await {
@@ -78,7 +59,7 @@ async fn fetch_responses() -> Result<Vec<ResponseSimulator>, CustomError> {
     }
 
     info!("Fetched {} records from response_simulator table", records.len());
-    if CONFIG.tracking.enabled == true {
+    if CONFIG.tracking.enabled {
         for record in &records {
             debug!("{:?}", record);
         }
@@ -87,44 +68,37 @@ async fn fetch_responses() -> Result<Vec<ResponseSimulator>, CustomError> {
     Ok(records)
 }
 
-static FILE_CONTENT: Lazy<String> = Lazy::new(|| {
-    info!("Reading file content at startup");
-    response::read_file_content("response.json").expect("Failed to read file content")
-});
-
 #[actix_web::post("/v1/chat/completions")]
-async fn chat_completions() -> Result<HttpResponse, CustomError> {
+async fn chat_completions(
+    client: web::Data<Arc<Mutex<Client>>>,
+    semaphore: web::Data<Arc<Semaphore>>,
+) -> Result<HttpResponse, CustomError> {
+    let _permit = semaphore.acquire().await.map_err(|_| CustomError::FetchError)?; // Acquire a permit
+
     info!("Received request for chat completions");
 
-    let responses = match CONFIG.source.as_str() {
-        "file" => serde_json::from_str::<Vec<ResponseSimulator>>(&FILE_CONTENT)
-            .expect("Failed to parse JSON"),
-        "database" => fetch_responses().await?,
+    let random_response = match CONFIG.source.as_str() {
+        "file" => read_random_markdown_file("zresponse").expect("Failed to read markdown file"),
+        "database" => {
+            let responses = fetch_responses(client.get_ref().clone()).await?;
+            if responses.is_empty() {
+                error!("No responses available");
+                return Err(CustomError::FetchError);
+            }
+            let response = select_random_response_from_db(&responses);
+            debug!("Selected Response: {:?}", response);
+            format_response_from_db(response)
+        },
         _ => {
             error!("Invalid source configuration");
             return Err(CustomError::InvalidSource);
         }
     };
-    if CONFIG.tracking.enabled == true {
-        debug!("All response record in DB : {:?}", responses);
-    }
-    if responses.is_empty() {
-        error!("No responses available");
-        return Err(CustomError::FetchError);
-    }
-
-    let random_response = if CONFIG.source == "file" {
-        select_random_response(&FILE_CONTENT)
-    } else {
-        let response = select_random_response_from_db(&responses);
-        debug!("Selected Response: {:?}", response);
-        format_response_from_db(response)
-    };
 
     let stream = openai_simulator(&random_response);
 
     let stream = stream.map(|chunk| {
-        if CONFIG.tracking.enabled == true {
+        if CONFIG.tracking.enabled {
             debug!("Sending chunk: {}", chunk);
         }
         Ok::<_, actix_web::Error>(web::Bytes::from(chunk))
@@ -151,9 +125,15 @@ async fn main() -> Result<(), CustomError> {
         .init();
     info!("Starting server at http://127.0.0.1:4545");
 
+    let client = Arc::new(Mutex::new(Client::default()
+        .with_url("http://localhost:8123")
+        .with_database("midai_simulator")
+        .with_user(CONFIG.database.username.clone())
+        .with_password(CONFIG.database.password.clone())));
+
     if CONFIG.source == "database" {
         // Check ClickHouse connection
-        match CLIENT.query("SELECT 1").execute().await {
+        match client.lock().unwrap().query("SELECT 1").execute().await {
             Ok(_) => info!("Successfully connected to ClickHouse database"),
             Err(e) => {
                 error!("Failed to connect to ClickHouse database: {}", e);
@@ -163,16 +143,16 @@ async fn main() -> Result<(), CustomError> {
 
         // Initial query to count rows in response_simulator table
         info!("Executing initial query to count rows in response_simulator table");
-        match CLIENT.query("SELECT COUNT(*) FROM response_simulator").fetch_one::<u64>().await {
+        match client.lock().unwrap().query("SELECT COUNT(*) FROM response_simulator").fetch_one::<u64>().await {
             Ok(count) => info!("Number of rows in response_simulator table: {}", count),
             Err(e) => error!("Failed to count rows in response_simulator table: {}", e),
         }
 
-        if CONFIG.tracking.enabled == true {
+        if CONFIG.tracking.enabled {
             // Initial query to fetch all records from response_simulator table
             info!("Executing initial query to fetch all records from response_simulator table");
 
-            let mut cursor = CLIENT
+            let mut cursor = client.lock().unwrap()
                 .query("SELECT qa_id, pertanyaan, jawaban, referensi FROM response_simulator")
                 .fetch::<ResponseSimulator>()?;
 
@@ -186,17 +166,20 @@ async fn main() -> Result<(), CustomError> {
                 debug!("{:?}", record);
             }
         }
-
     }
 
-    HttpServer::new(|| {
+    let semaphore = Arc::new(Semaphore::new(500)); // Limit to 10 concurrent requests
+
+    HttpServer::new(move || {
         App::new()
             .wrap(Logger::default())
+            .app_data(web::Data::new(client.clone()))
+            .app_data(web::Data::new(semaphore.clone()))
             .service(chat_completions)
     })
         .bind("127.0.0.1:4545")
-        .map_err(|_e| CustomError::FetchError)? // Prefix unused variable with an underscore
+        .map_err(|_| CustomError::FetchError)? // Convert the error type
         .run()
         .await
-        .map_err(|_e| CustomError::FetchError) // Prefix unused variable with an underscore
+        .map_err(|_| CustomError::FetchError) // Convert the error type
 }

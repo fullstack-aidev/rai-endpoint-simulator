@@ -1,7 +1,7 @@
-source: database # file or database
+source: file # file or database
 database:
   username: simulator_app
   password: your_password
 tracking:
   enabled: false
-log_level: info
+log_level: debug

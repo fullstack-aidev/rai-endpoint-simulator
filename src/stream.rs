@@ -1,12 +1,9 @@
 use futures_util::Stream;
-use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc::{channel, Sender};
 use log::{info, debug, error};
 use rand::Rng;
 use serde::Serialize;
-use std::time::Duration;
-use crate::CONFIG;
 
 #[derive(Serialize)]
 struct Chunk {
@@ -66,7 +63,7 @@ fn generate_id() -> String {
 }
 
 fn split_into_chunks(input: &str) -> Vec<String> {
-    let chunk_size = 100; // Adjust chunk size as needed
+    let chunk_size = 6; // Adjust chunk size as needed
     input
         .as_bytes()
         .chunks(chunk_size)
@@ -97,16 +94,11 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
         let chunk_str = serde_json::to_string(&chunk).unwrap();
         let combined_chunk = format!("data: {}\n\n", chunk_str);
 
-        if tx.send(combined_chunk.clone()).await.is_err() {
-            error!("Failed to send chunk: {}", combined_chunk);
-            break;
+        if let Err(e) = tx.send(combined_chunk.clone()).await {
+            error!("Failed to send chunk: {}. Error: {}", combined_chunk, e);
         } else {
-            if CONFIG.tracking.enabled == true {
-                debug!("Sent chunk: {}", combined_chunk);
-            }
+            debug!("Sent chunk: {}", combined_chunk);
         }
-
-        sleep(Duration::from_millis(100)).await;
     }
 
     let final_chunk = Chunk {
@@ -133,16 +125,14 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
     let final_chunk_str = serde_json::to_string(&final_chunk).unwrap();
     let combined_final_chunk = format!("data: {}\n\n", final_chunk_str);
 
-    if tx.send(combined_final_chunk.clone()).await.is_err() {
-        error!("Failed to send final chunk: {}", combined_final_chunk);
-        return;
+    if let Err(e) = tx.send(combined_final_chunk.clone()).await {
+        error!("Failed to send final chunk: {}. Error: {}", combined_final_chunk, e);
     } else {
         info!("Sent final chunk: {}", combined_final_chunk);
     }
 
-    if tx.send("data: [DONE]".to_string()).await.is_err() {
-        error!("Failed to send final chunk: data: [DONE]");
-        return;
+    if let Err(e) = tx.send("data: [DONE]".to_string()).await {
+        error!("Failed to send final chunk: data: [DONE]. Error: {}", e);
     } else {
         debug!("Sent final chunk: data: [DONE]");
     }
@@ -150,10 +140,12 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
 
 pub fn openai_simulator(input: &str) -> impl Stream<Item = String> {
     info!("Starting OpenAI simulator");
-    let (tx, rx) = channel(10);
+    let (tx, rx) = channel(500);
     let input = input.to_string();
+
     tokio::spawn(async move {
         generate_chunks(tx, &input).await;
     });
+
     ReceiverStream::new(rx)
 }
