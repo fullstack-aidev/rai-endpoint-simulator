@@ -128,7 +128,7 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
     if let Err(e) = tx.send(combined_final_chunk.clone()).await {
         error!("Failed to send final chunk: {}. Error: {}", combined_final_chunk, e);
     } else {
-        info!("Sent final chunk: {}", combined_final_chunk);
+        debug!("Sent final chunk: {}", combined_final_chunk);
     }
 
     if let Err(e) = tx.send("data: [DONE]".to_string()).await {
