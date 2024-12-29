@@ -23,6 +23,8 @@ enum CustomError {
     FetchError,
     #[display(fmt = "Invalid source configuration")]
     InvalidSource,
+    #[display(fmt = "Failed to bind server: {}", _0)]
+    BindError(String),
 }
 
 impl ResponseError for CustomError {}
@@ -30,6 +32,12 @@ impl ResponseError for CustomError {}
 impl From<clickhouse::error::Error> for CustomError {
     fn from(_error: clickhouse::error::Error) -> Self {
         CustomError::FetchError
+    }
+}
+
+impl From<std::io::Error> for CustomError {
+    fn from(error: std::io::Error) -> Self {
+        CustomError::BindError(error.to_string())
     }
 }
 
@@ -66,6 +74,33 @@ async fn fetch_responses(client: Arc<Mutex<Client>>) -> Result<Vec<ResponseSimul
     }
 
     Ok(records)
+}
+
+
+#[actix_web::post("/test_completion")]
+async fn test_completion() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "id": "chatcmpl-AjoahzpVUCsJmOQZRKZUze7qBjEjn",
+        "object": "chat.completion",
+        "created": 1735482595,
+        "model": "gpt-4o-2024-08-06",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "============>>  Selamat! Aplikasi anda telah sukses terhubung ke OpenAI Simulator. <============="
+                },
+                "logprobs": null,
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 92,
+            "total_tokens": 149
+        }
+    }))
 }
 
 #[actix_web::post("/v1/chat/completions")]
@@ -123,7 +158,7 @@ async fn main() -> Result<(), CustomError> {
     Builder::new()
         .filter(None, log_level)
         .init();
-    info!("Starting server at http://127.0.0.1:4545");
+    info!("Starting server at http://{}:{}", CONFIG.binding.host, CONFIG.binding.port);
 
     let client = Arc::new(Mutex::new(Client::default()
         .with_url(&CONFIG.database.url)
@@ -168,7 +203,7 @@ async fn main() -> Result<(), CustomError> {
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(500)); // Limit to 10 concurrent requests
+    let semaphore = Arc::new(Semaphore::new(1000)); // Limit to 1000 concurrent requests
 
     HttpServer::new(move || {
         App::new()
@@ -176,10 +211,10 @@ async fn main() -> Result<(), CustomError> {
             .app_data(web::Data::new(client.clone()))
             .app_data(web::Data::new(semaphore.clone()))
             .service(chat_completions)
+            .service(test_completion)
     })
-        .bind("127.0.0.1:4545")
-        .map_err(|_| CustomError::FetchError)? // Convert the error type
+        .bind(format!("{}:{}", CONFIG.binding.host, CONFIG.binding.port))?
         .run()
         .await
-        .map_err(|_| CustomError::FetchError) // Convert the error type
+        .map_err(|e| CustomError::BindError(e.to_string()))
 }
