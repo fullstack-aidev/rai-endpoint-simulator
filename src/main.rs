@@ -126,7 +126,7 @@ async fn main() -> Result<(), CustomError> {
     info!("Starting server at http://127.0.0.1:4545");
 
     let client = Arc::new(Mutex::new(Client::default()
-        .with_url("http://localhost:8123")
+        .with_url(&CONFIG.database.url)
         .with_database("midai_simulator")
         .with_user(CONFIG.database.username.clone())
         .with_password(CONFIG.database.password.clone())));

@@ -1,5 +1,6 @@
 source: file # file or database
 database:
+  url: http://localhost:8123
   username: simulator_app
   password: your_password
 tracking:
