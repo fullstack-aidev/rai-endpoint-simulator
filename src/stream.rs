@@ -63,7 +63,7 @@ fn generate_id() -> String {
 }
 
 fn split_into_chunks(input: &str) -> Vec<String> {
-    let chunk_size = 6; // Adjust chunk size as needed
+    let chunk_size = 10; // Adjust chunk size as needed
     input
         .as_bytes()
         .chunks(chunk_size)
@@ -140,7 +140,9 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
 
 pub fn openai_simulator(input: &str) -> impl Stream<Item = String> {
     info!("Starting OpenAI simulator");
-    let (tx, rx) = channel(500);
+
+    // Use async channel with capacity 10000
+    let (tx, rx) = channel(10000);
     let input = input.to_string();
 
     tokio::spawn(async move {
