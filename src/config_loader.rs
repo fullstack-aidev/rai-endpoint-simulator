@@ -20,6 +20,7 @@ pub struct Config {
     pub binding: BindingConfig,
     pub tracking: TrackingConfig,
     pub log_level: String,
+    pub channel_capacity: usize,
 }
 
 #[derive(Deserialize)]

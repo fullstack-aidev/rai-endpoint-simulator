@@ -4,6 +4,7 @@ use tokio::sync::mpsc::{channel, Sender};
 use log::{info, debug, error};
 use rand::Rng;
 use serde::Serialize;
+use crate::CONFIG;
 
 #[derive(Serialize)]
 struct Chunk {
@@ -142,7 +143,7 @@ pub fn openai_simulator(input: &str) -> impl Stream<Item = String> {
     info!("Starting OpenAI simulator");
 
     // Use async channel with capacity 10000
-    let (tx, rx) = channel(10000);
+    let (tx, rx) = channel(CONFIG.channel_capacity);
     let input = input.to_string();
 
     tokio::spawn(async move {

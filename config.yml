@@ -9,3 +9,4 @@ database:
 tracking:
   enabled: false
 log_level: info
+channel_capacity: 10000
