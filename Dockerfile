@@ -9,34 +9,43 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     pkg-config \
     libssl-dev \
+    libc6-dev \
+    libcrypt1 \
+    libnss-nisplus \
+    libnss-nis \
+    musl-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Update rust and cargo to the latest stable version
 RUN rustup update stable
 
-# Copy the Cargo.toml and Cargo.lock files
-COPY Cargo.toml Cargo.lock ./
+# Install musl target
+RUN rustup target add x86_64-unknown-linux-musl
+
+# Copy the Cargo.toml, Cargo.lock, and config.yml files
+COPY Cargo.toml Cargo.lock config.yml ./
+
 # Copy the source code
 COPY src ./src
 
-# Build the project
-RUN cargo build --release
+# Copy the zresponse folder
+COPY zresponse ./zresponse
 
-# Use a smaller base image to run the compiled binary
-FROM debian:buster-slim
+# Build the project with static linking using musl-gcc
+RUN CC=musl-gcc cargo build --release --target x86_64-unknown-linux-musl
 
-# Install required libraries
-RUN apt-get update && apt-get install -y \
-    libssl1.1 \
-    && rm -rf /var/lib/apt/lists/*
+# Use a slimmer base image to run the compiled binary
+FROM debian:stable-slim
 
 # Set the working directory
 WORKDIR /app
 
 # Copy the compiled binary from the builder stage
-COPY --from=builder /app/target/release/rai-endpoint-simulator ./
-# Copy the zresponse folder
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/rai-endpoint-simulator ./
+
+# Copy the zresponse folder and config.yml
 COPY --from=builder /app/zresponse ./zresponse
+COPY --from=builder /app/config.yml ./
 
 # Expose the port the application runs on
 EXPOSE 4545
