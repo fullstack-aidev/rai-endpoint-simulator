@@ -1,3 +1,5 @@
+// src/stream.rs
+
 use futures_util::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc::{channel, Sender};
@@ -7,53 +9,53 @@ use serde::Serialize;
 use crate::CONFIG;
 
 #[derive(Serialize)]
-struct Chunk {
-    id: String,
-    object: String,
-    created: u64,
-    model: String,
-    system_fingerprint: String,
-    choices: Vec<Choice>,
-    usage: Option<Usage>,
+pub struct Chunk {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub system_fingerprint: String,
+    pub choices: Vec<Choice>,
+    pub usage: Option<Usage>,
 }
 
 #[derive(Serialize)]
-struct Choice {
-    index: u32,
-    delta: Delta,
-    logprobs: Option<serde_json::Value>,
-    finish_reason: Option<String>,
+pub struct Choice {
+    pub index: u32,
+    pub delta: Delta,
+    pub logprobs: Option<serde_json::Value>,
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Serialize)]
-struct Delta {
-    content: String,
+pub struct Delta {
+    pub content: String,
 }
 
 #[derive(Serialize)]
-struct Usage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-    prompt_tokens_details: PromptTokensDetails,
-    completion_tokens_details: CompletionTokensDetails,
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub prompt_tokens_details: PromptTokensDetails,
+    pub completion_tokens_details: CompletionTokensDetails,
 }
 
 #[derive(Serialize)]
-struct PromptTokensDetails {
-    cached_tokens: u32,
-    audio_tokens: u32,
+pub struct PromptTokensDetails {
+    pub cached_tokens: u32,
+    pub audio_tokens: u32,
 }
 
 #[derive(Serialize)]
-struct CompletionTokensDetails {
-    reasoning_tokens: u32,
-    audio_tokens: u32,
-    accepted_prediction_tokens: u32,
-    rejected_prediction_tokens: u32,
+pub struct CompletionTokensDetails {
+    pub reasoning_tokens: u32,
+    pub audio_tokens: u32,
+    pub accepted_prediction_tokens: u32,
+    pub rejected_prediction_tokens: u32,
 }
 
-fn generate_id() -> String {
+pub fn generate_id() -> String {
     let prefix = "chatcmpl-Ai";
     let suffix: String = rand::thread_rng()
         .sample_iter(&rand::distributions::Alphanumeric)
@@ -102,45 +104,11 @@ async fn generate_chunks(tx: Sender<String>, input: &str) {
         }
     }
 
-    let final_chunk = Chunk {
-        id: generate_id(),
-        object: "chat.completion.chunk".to_string(),
-        created: 1735278816,
-        model: "gpt-4o-2024-08-06".to_string(),
-        system_fingerprint: "fp_d28bcae782".to_string(),
-        choices: vec![],
-        usage: Some(Usage {
-            prompt_tokens: 182,
-            completion_tokens: 520,
-            total_tokens: 702,
-            prompt_tokens_details: PromptTokensDetails { cached_tokens: 0, audio_tokens: 0 },
-            completion_tokens_details: CompletionTokensDetails {
-                reasoning_tokens: 0,
-                audio_tokens: 0,
-                accepted_prediction_tokens: 0,
-                rejected_prediction_tokens: 0,
-            },
-        }),
-    };
-
-    let final_chunk_str = serde_json::to_string(&final_chunk).unwrap();
-    let combined_final_chunk = format!("data: {}\n\n", final_chunk_str);
-
-    if let Err(e) = tx.send(combined_final_chunk.clone()).await {
-        error!("Failed to send final chunk: {}. Error: {}", combined_final_chunk, e);
-    } else {
-        debug!("Sent final chunk: {}", combined_final_chunk);
-    }
-
-    if let Err(e) = tx.send("data: [DONE]".to_string()).await {
-        error!("Failed to send final chunk: data: [DONE]. Error: {}", e);
-    } else {
-        debug!("Sent final chunk: data: [DONE]");
-    }
+    // Remove the final chunk sending from here
 }
 
 pub fn openai_simulator(input: &str) -> impl Stream<Item = String> {
-    info!("Starting OpenAI simulator");
+    //info!("Starting OpenAI simulator");
 
     // Use async channel with capacity 10000
     let (tx, rx) = channel(CONFIG.channel_capacity);

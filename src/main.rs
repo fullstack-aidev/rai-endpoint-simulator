@@ -12,7 +12,7 @@ use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::response::{select_random_response_from_db, format_response_from_db, read_random_markdown_file};
-use crate::stream::openai_simulator;
+use crate::stream::{openai_simulator, Chunk, generate_id, PromptTokensDetails, Usage, CompletionTokensDetails};
 use crate::config_loader::Config;
 use env_logger::Builder;
 use once_cell::sync::Lazy;
@@ -134,14 +134,53 @@ async fn chat_completions(
 
     let stream = stream.map(|chunk| {
         if CONFIG.tracking.enabled {
-            debug!("Sending chunk: {}", chunk);
+            //debug!("Sending chunk: {}", chunk);
         }
         Ok::<_, actix_web::Error>(web::Bytes::from(chunk))
     });
 
+    let final_stream = stream.chain(futures_util::stream::once(async {
+        let final_chunk = Chunk {
+            id: generate_id(),
+            object: "chat.completion.chunk".to_string(),
+            created: 1735278816,
+            model: "gpt-4o-2024-08-06".to_string(),
+            system_fingerprint: "fp_d28bcae782".to_string(),
+            choices: vec![],
+            usage: Some(Usage {
+                prompt_tokens: 182,
+                completion_tokens: 520,
+                total_tokens: 702,
+                prompt_tokens_details: PromptTokensDetails { cached_tokens: 0, audio_tokens: 0 },
+                completion_tokens_details: CompletionTokensDetails {
+                    reasoning_tokens: 0,
+                    audio_tokens: 0,
+                    accepted_prediction_tokens: 0,
+                    rejected_prediction_tokens: 0,
+                },
+            }),
+        };
+
+        let final_chunk_str = match serde_json::to_string(&final_chunk) {
+            Ok(str) => str,
+            Err(e) => {
+                error!("Failed to serialize final chunk: {}", e);
+                return Ok::<_, actix_web::Error>(web::Bytes::from("data: [ERROR]\n\n"));
+            }
+        };
+
+        let combined_final_chunk = format!("data: {}\n\n", final_chunk_str);
+
+        if CONFIG.tracking.enabled {
+            info!("Sending final chunk: {}", combined_final_chunk);
+        }
+
+        Ok::<_, actix_web::Error>(web::Bytes::from(combined_final_chunk))
+    }));
+
     Ok(HttpResponse::Ok()
         .content_type("text/event-stream")
-        .streaming(stream))
+        .streaming(final_stream))
 }
 
 #[actix_web::main]
@@ -203,7 +242,7 @@ async fn main() -> Result<(), CustomError> {
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(1000)); // Limit to 1000 concurrent requests
+    let semaphore = Arc::new(Semaphore::new(5000)); // Limit to 5000 concurrent requests
 
     HttpServer::new(move || {
         App::new()
