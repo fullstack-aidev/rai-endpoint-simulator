@@ -21,6 +21,7 @@ pub struct Config {
     pub tracking: TrackingConfig,
     pub log_level: String,
     pub channel_capacity: usize,
+    pub semaphore_limit: usize,
 }
 
 #[derive(Deserialize)]

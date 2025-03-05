@@ -206,7 +206,6 @@ async fn main() -> Result<(), CustomError> {
         .with_password(CONFIG.database.password.clone())));
 
     if CONFIG.source == "database" {
-        // Check ClickHouse connection
         match client.lock().unwrap().query("SELECT 1").execute().await {
             Ok(_) => info!("Successfully connected to ClickHouse database"),
             Err(e) => {
@@ -215,7 +214,6 @@ async fn main() -> Result<(), CustomError> {
             }
         }
 
-        // Initial query to count rows in response_simulator table
         info!("Executing initial query to count rows in response_simulator table");
         match client.lock().unwrap().query("SELECT COUNT(*) FROM response_simulator").fetch_one::<u64>().await {
             Ok(count) => info!("Number of rows in response_simulator table: {}", count),
@@ -223,7 +221,6 @@ async fn main() -> Result<(), CustomError> {
         }
 
         if CONFIG.tracking.enabled {
-            // Initial query to fetch all records from response_simulator table
             info!("Executing initial query to fetch all records from response_simulator table");
 
             let mut cursor = client.lock().unwrap()
@@ -242,7 +239,7 @@ async fn main() -> Result<(), CustomError> {
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(5000)); // Limit to 5000 concurrent requests
+    let semaphore = Arc::new(Semaphore::new(CONFIG.semaphore_limit)); // Use semaphore limit from config
 
     HttpServer::new(move || {
         App::new()

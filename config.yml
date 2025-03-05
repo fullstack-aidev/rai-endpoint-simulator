@@ -10,3 +10,4 @@ tracking:
   enabled: false
 log_level: info
 channel_capacity: 10000
+semaphore_limit: 150000
