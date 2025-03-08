@@ -1,6 +1,6 @@
 binding:
   port: 4545
-  host : 127.0.0.1
+  host : 0.0.0.0
 source: file # file or database
 database:
   url: http:/127.0.0.1:8123

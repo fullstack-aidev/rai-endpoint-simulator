@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   rai-endpoint-simulator_replica_01:
-    image: rai-endpoint-simulator:minimized
+    image: rai-endpoint-simulator:latest
     environment:
       RUST_LOG: info
     volumes:
@@ -12,7 +12,7 @@ services:
       - rai-endpoint-sim-network
 
   rai-endpoint-simulator_replica_02:
-    image: rai-endpoint-simulator:minimized
+    image: rai-endpoint-simulator:latest
     environment:
       RUST_LOG: info
     volumes:
@@ -21,15 +21,6 @@ services:
     networks:
       - rai-endpoint-sim-network
 
-  rai-endpoint-simulator_replica_03:
-    image: rai-endpoint-simulator:minimized
-    environment:
-      RUST_LOG: info
-    volumes:
-      - ./zresponse:/app/zresponse
-      - ./config.yml:/app/config.yml
-    networks:
-      - rai-endpoint-sim-network
 
   haproxy:
     image: haproxy:latest
@@ -42,7 +33,6 @@ services:
     depends_on:
       - rai-endpoint-simulator_replica_01
       - rai-endpoint-simulator_replica_02
-      - rai-endpoint-simulator_replica_03
 
 networks:
   rai-endpoint-sim-network:
