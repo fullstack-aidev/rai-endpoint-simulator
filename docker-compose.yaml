@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   rai-endpoint-simulator_replica_01:
-    image: rai-endpoint-simulator:latest
+    image: itrndyovision/rai-openai-based-simulator:pusintelad
     environment:
       RUST_LOG: info
     volumes:
@@ -12,7 +12,7 @@ services:
       - rai-endpoint-sim-network
 
   rai-endpoint-simulator_replica_02:
-    image: rai-endpoint-simulator:latest
+    image: itrndyovision/rai-openai-based-simulator:pusintelad
     environment:
       RUST_LOG: info
     volumes:
@@ -20,7 +20,6 @@ services:
       - ./config.yml:/app/config.yml
     networks:
       - rai-endpoint-sim-network
-
 
   haproxy:
     image: haproxy:latest
