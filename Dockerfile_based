@@ -1,0 +1,54 @@
+# Use the official Rust image to build the project
+FROM rust:latest AS builder
+
+# Set the working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libc6-dev \
+    libcrypt1 \
+    libnss-nisplus \
+    libnss-nis \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Update rust and cargo to the latest stable version
+RUN rustup update stable
+
+# Install musl target
+RUN rustup target add x86_64-unknown-linux-musl
+
+# Copy the Cargo.toml, Cargo.lock, and config.yml files
+COPY Cargo.toml Cargo.lock config.yml ./
+
+# Copy the source code
+COPY src ./src
+
+# Copy the zresponse folder
+COPY zresponse ./zresponse
+
+# Build the project with static linking using musl-gcc
+RUN CC=musl-gcc cargo build --release --target x86_64-unknown-linux-musl
+
+# Use a slimmer base image to run the compiled binary
+FROM debian:stable-slim
+
+# Set the working directory
+WORKDIR /app
+
+# Copy ONLY the compiled binary from the builder stage
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/rai-endpoint-simulator ./
+
+# Copy ONLY the necessary runtime files (zresponse folder and config.yml)
+COPY --from=builder /app/zresponse ./zresponse
+COPY --from=builder /app/config.yml ./
+
+# Expose the port the application runs on
+EXPOSE 4545
+
+# Run the binary
+CMD ["./rai-endpoint-simulator"]
