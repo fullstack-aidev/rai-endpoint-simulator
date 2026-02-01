@@ -1,15 +1,43 @@
-version: '3.8'
+version: "3.8"
 
 services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - rai-endpoint-sim-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
   rai-endpoint-simulator_replica_01:
     image: itrndyovision/rai-openai-based-simulator:pusintelad
     environment:
       RUST_LOG: info
     volumes:
       - ./zresponse:/app/zresponse
-      - ./config.yml:/app/config.yml
+      - ./config.docker.yml:/app/config.yml
     networks:
       - rai-endpoint-sim-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
 
   rai-endpoint-simulator_replica_02:
     image: itrndyovision/rai-openai-based-simulator:pusintelad
@@ -17,9 +45,35 @@ services:
       RUST_LOG: info
     volumes:
       - ./zresponse:/app/zresponse
-      - ./config.yml:/app/config.yml
+      - ./config.docker.yml:/app/config.yml
     networks:
       - rai-endpoint-sim-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+
+  rai-endpoint-simulator_replica_03:
+    image: itrndyovision/rai-openai-based-simulator:pusintelad
+    environment:
+      RUST_LOG: info
+    volumes:
+      - ./zresponse:/app/zresponse
+      - ./config.docker.yml:/app/config.yml
+    networks:
+      - rai-endpoint-sim-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
 
   haproxy:
     image: haproxy:latest
@@ -32,7 +86,16 @@ services:
     depends_on:
       - rai-endpoint-simulator_replica_01
       - rai-endpoint-simulator_replica_02
+      - rai-endpoint-simulator_replica_03
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
 
 networks:
   rai-endpoint-sim-network:
     driver: bridge
+
+volumes:
+  redis_data:
