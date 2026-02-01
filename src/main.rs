@@ -2,16 +2,19 @@ mod stream;
 mod response;
 mod config_loader;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use actix_web::{web, App, HttpResponse, HttpServer, middleware::Logger, ResponseError};
 use tokio::sync::Semaphore;
-use futures_util::StreamExt; // Import StreamExt trait
-use log::{info, debug, error};
+use futures_util::StreamExt;
+use log::{info, debug, error, warn};
 use clickhouse::{Client, Row};
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::response::{select_random_response_from_db, format_response_from_db, read_random_markdown_file};
+use redis::aio::ConnectionManager;
+use redis::AsyncCommands;
+use crate::response::{select_random_response_from_db, format_response_from_db, read_random_markdown_file_async};
+use chrono;
 use crate::stream::{openai_simulator, Chunk, generate_id, PromptTokensDetails, Usage, CompletionTokensDetails};
 use crate::config_loader::Config;
 use env_logger::Builder;
@@ -25,6 +28,8 @@ enum CustomError {
     InvalidSource,
     #[display(fmt = "Failed to bind server: {}", _0)]
     BindError(String),
+    #[display(fmt = "Redis error: {}", _0)]
+    RedisError(String),
 }
 
 impl ResponseError for CustomError {}
@@ -41,6 +46,12 @@ impl From<std::io::Error> for CustomError {
     }
 }
 
+impl From<redis::RedisError> for CustomError {
+    fn from(error: redis::RedisError) -> Self {
+        CustomError::RedisError(error.to_string())
+    }
+}
+
 #[derive(Row, Deserialize, Serialize, Debug, Clone)]
 struct ResponseSimulator {
     #[serde(default, with = "clickhouse::serde::uuid::option")]
@@ -52,13 +63,41 @@ struct ResponseSimulator {
 
 static CONFIG: Lazy<Config> = Lazy::new(|| Config::load());
 
-async fn fetch_responses(client: Arc<Mutex<Client>>) -> Result<Vec<ResponseSimulator>, CustomError> {
-    info!("Attempting to fetch responses from the database");
+/// Application state shared across workers
+struct AppState {
+    db_client: Client,
+    redis: ConnectionManager,
+}
+
+impl AppState {
+    fn new(db_client: Client, redis: ConnectionManager) -> Self {
+        Self {
+            db_client,
+            redis,
+        }
+    }
+}
+
+/// Redis key helpers
+fn redis_key_db_responses(prefix: &str) -> String {
+    format!("{}:db_responses", prefix)
+}
+
+fn redis_key_file_content(prefix: &str, filename: &str) -> String {
+    format!("{}:file:{}", prefix, filename)
+}
+
+fn redis_key_file_list(prefix: &str) -> String {
+    format!("{}:file_list", prefix)
+}
+
+/// Fetch responses from database
+async fn fetch_responses_from_db(client: &Client) -> Result<Vec<ResponseSimulator>, CustomError> {
+    info!("Fetching responses from the database");
 
     let query = "SELECT qa_id, pertanyaan, jawaban, referensi FROM response_simulator";
     debug!("Executing query: {}", query);
 
-    let client = client.lock().unwrap();
     let mut cursor = client.query(query).fetch::<ResponseSimulator>()?;
 
     let mut records = Vec::new();
@@ -76,6 +115,140 @@ async fn fetch_responses(client: Arc<Mutex<Client>>) -> Result<Vec<ResponseSimul
     Ok(records)
 }
 
+/// Get cached responses from Redis, or fetch from database if cache miss/expired
+async fn get_cached_db_responses(state: &AppState) -> Result<Vec<ResponseSimulator>, CustomError> {
+    let mut redis = state.redis.clone();
+    let key = redis_key_db_responses(&CONFIG.redis.prefix);
+
+    // Try to get from Redis cache
+    let cached: Option<String> = redis.get(&key).await.unwrap_or(None);
+
+    if let Some(cached_json) = cached {
+        match serde_json::from_str::<Vec<ResponseSimulator>>(&cached_json) {
+            Ok(responses) => {
+                debug!("Cache hit: returning {} cached responses from Redis", responses.len());
+                return Ok(responses);
+            }
+            Err(e) => {
+                warn!("Failed to deserialize cached responses: {}", e);
+                // Continue to fetch fresh data
+            }
+        }
+    }
+
+    // Cache miss or error, fetch from database
+    info!("Cache miss, fetching from database");
+    let responses = fetch_responses_from_db(&state.db_client).await?;
+
+    // Store in Redis with TTL
+    if !responses.is_empty() {
+        match serde_json::to_string(&responses) {
+            Ok(json) => {
+                let ttl = CONFIG.cache_ttl as i64;
+                if let Err(e) = redis.set_ex::<_, _, ()>(&key, &json, ttl as u64).await {
+                    warn!("Failed to cache responses in Redis: {}", e);
+                } else {
+                    debug!("Cached {} responses in Redis with TTL {}s", responses.len(), ttl);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize responses for caching: {}", e);
+            }
+        }
+    }
+
+    Ok(responses)
+}
+
+/// Get cached file content from Redis, or read from disk if cache miss
+async fn get_cached_file_response(state: &AppState, folder_path: &str) -> Result<String, CustomError> {
+    let mut redis = state.redis.clone();
+
+    // Get list of files from cache or scan directory
+    let file_list_key = redis_key_file_list(&CONFIG.redis.prefix);
+    let cached_list: Option<String> = redis.get(&file_list_key).await.unwrap_or(None);
+
+    let files: Vec<String> = if let Some(list_json) = cached_list {
+        serde_json::from_str(&list_json).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+
+    // If no cached file list, scan directory and cache it
+    let files = if files.is_empty() {
+        let folder = folder_path.to_string();
+        let scanned_files = tokio::task::spawn_blocking(move || {
+            std::fs::read_dir(&folder)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .filter(|entry| entry.path().extension().map_or(false, |ext| ext == "md"))
+                        .filter_map(|entry| entry.file_name().into_string().ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|_| Vec::new())
+        })
+        .await
+        .map_err(|_e| CustomError::FetchError)?;
+
+        // Cache file list with longer TTL (10 minutes)
+        if !scanned_files.is_empty() {
+            if let Ok(json) = serde_json::to_string(&scanned_files) {
+                let _ = redis.set_ex::<_, _, ()>(&file_list_key, &json, 600u64).await;
+            }
+        }
+
+        scanned_files
+    } else {
+        files
+    };
+
+    if files.is_empty() {
+        error!("No markdown files found in {}", folder_path);
+        return Err(CustomError::FetchError);
+    }
+
+    // Select random file
+    let random_idx = rand::random::<usize>() % files.len();
+    let selected_file = &files[random_idx];
+    let file_key = redis_key_file_content(&CONFIG.redis.prefix, selected_file);
+
+    // Try to get file content from Redis
+    let cached_content: Option<String> = redis.get(&file_key).await.unwrap_or(None);
+
+    if let Some(content) = cached_content {
+        debug!("Cache hit: returning cached content for file {}", selected_file);
+        return Ok(content);
+    }
+
+    // Cache miss, read from disk
+    let file_path = format!("{}/{}", folder_path, selected_file);
+    info!("Cache miss, reading file from disk: {}", file_path);
+
+    let content = read_random_markdown_file_async(folder_path).await.map_err(|e| {
+        error!("Failed to read markdown file: {}", e);
+        CustomError::FetchError
+    })?;
+
+    // Cache file content with TTL
+    let ttl = CONFIG.cache_ttl as u64;
+    if let Err(e) = redis.set_ex::<_, _, ()>(&file_key, &content, ttl).await {
+        warn!("Failed to cache file content in Redis: {}", e);
+    } else {
+        debug!("Cached file content in Redis with TTL {}s", ttl);
+    }
+
+    Ok(content)
+}
+
+#[actix_web::get("/health")]
+async fn health_check() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": "healthy",
+        "service": "rai-endpoint-simulator",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }))
+}
 
 #[actix_web::post("/test_completion")]
 async fn test_completion() -> HttpResponse {
@@ -105,17 +278,19 @@ async fn test_completion() -> HttpResponse {
 
 #[actix_web::post("/v1/chat/completions")]
 async fn chat_completions(
-    client: web::Data<Arc<Mutex<Client>>>,
+    state: web::Data<Arc<AppState>>,
     semaphore: web::Data<Arc<Semaphore>>,
 ) -> Result<HttpResponse, CustomError> {
-    let _permit = semaphore.acquire().await.map_err(|_| CustomError::FetchError)?; // Acquire a permit
+    let _permit = semaphore.acquire().await.map_err(|_| CustomError::FetchError)?;
 
     info!("Received request for chat completions");
 
     let random_response = match CONFIG.source.as_str() {
-        "file" => read_random_markdown_file("zresponse").expect("Failed to read markdown file"),
+        "file" => {
+            get_cached_file_response(&state, "zresponse").await?
+        },
         "database" => {
-            let responses = fetch_responses(client.get_ref().clone()).await?;
+            let responses = get_cached_db_responses(&state).await?;
             if responses.is_empty() {
                 error!("No responses available");
                 return Err(CustomError::FetchError);
@@ -197,16 +372,31 @@ async fn main() -> Result<(), CustomError> {
     Builder::new()
         .filter(None, log_level)
         .init();
-    info!("Starting server at http://{}:{}", CONFIG.binding.host, CONFIG.binding.port);
 
-    let client = Arc::new(Mutex::new(Client::default()
+    info!("Starting server at http://{}:{}", CONFIG.binding.host, CONFIG.binding.port);
+    info!("Configuration: workers={}, semaphore_limit={}, cache_ttl={}s",
+          CONFIG.workers, CONFIG.semaphore_limit, CONFIG.cache_ttl);
+
+    // Initialize Redis connection
+    info!("Connecting to Redis at {}", CONFIG.redis.url);
+    let redis_client = redis::Client::open(CONFIG.redis.url.as_str())
+        .map_err(|e| CustomError::RedisError(format!("Failed to create Redis client: {}", e)))?;
+
+    let redis_conn = ConnectionManager::new(redis_client)
+        .await
+        .map_err(|e| CustomError::RedisError(format!("Failed to connect to Redis: {}", e)))?;
+
+    info!("Successfully connected to Redis");
+
+    // Initialize ClickHouse client
+    let db_client = Client::default()
         .with_url(&CONFIG.database.url)
         .with_database("midai_simulator")
         .with_user(CONFIG.database.username.clone())
-        .with_password(CONFIG.database.password.clone())));
+        .with_password(CONFIG.database.password.clone());
 
     if CONFIG.source == "database" {
-        match client.lock().unwrap().query("SELECT 1").execute().await {
+        match db_client.query("SELECT 1").execute().await {
             Ok(_) => info!("Successfully connected to ClickHouse database"),
             Err(e) => {
                 error!("Failed to connect to ClickHouse database: {}", e);
@@ -215,7 +405,7 @@ async fn main() -> Result<(), CustomError> {
         }
 
         info!("Executing initial query to count rows in response_simulator table");
-        match client.lock().unwrap().query("SELECT COUNT(*) FROM response_simulator").fetch_one::<u64>().await {
+        match db_client.query("SELECT COUNT(*) FROM response_simulator").fetch_one::<u64>().await {
             Ok(count) => info!("Number of rows in response_simulator table: {}", count),
             Err(e) => error!("Failed to count rows in response_simulator table: {}", e),
         }
@@ -223,7 +413,7 @@ async fn main() -> Result<(), CustomError> {
         if CONFIG.tracking.enabled {
             info!("Executing initial query to fetch all records from response_simulator table");
 
-            let mut cursor = client.lock().unwrap()
+            let mut cursor = db_client
                 .query("SELECT qa_id, pertanyaan, jawaban, referensi FROM response_simulator")
                 .fetch::<ResponseSimulator>()?;
 
@@ -239,16 +429,20 @@ async fn main() -> Result<(), CustomError> {
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(CONFIG.semaphore_limit)); // Use semaphore limit from config
+    // Create shared application state
+    let app_state = Arc::new(AppState::new(db_client, redis_conn));
+    let semaphore = Arc::new(Semaphore::new(CONFIG.semaphore_limit));
 
     HttpServer::new(move || {
         App::new()
             .wrap(Logger::default())
-            .app_data(web::Data::new(client.clone()))
+            .app_data(web::Data::new(app_state.clone()))
             .app_data(web::Data::new(semaphore.clone()))
+            .service(health_check)
             .service(chat_completions)
             .service(test_completion)
     })
+        .workers(CONFIG.workers)
         .bind(format!("{}:{}", CONFIG.binding.host, CONFIG.binding.port))?
         .run()
         .await

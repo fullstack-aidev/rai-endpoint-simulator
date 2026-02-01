@@ -24,6 +24,24 @@ pub fn read_random_markdown_file(folder_path: &str) -> io::Result<String> {
     read_file_content(random_file.path().to_str().unwrap())
 }
 
+/// Async version of read_random_markdown_file using spawn_blocking
+/// to avoid blocking the async runtime
+pub async fn read_random_markdown_file_async(folder_path: &str) -> io::Result<String> {
+    let folder_path = folder_path.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        read_random_markdown_file(&folder_path)
+    })
+    .await
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Task join error: {}", e)))?
+}
+
+/// Async version of read_file_content using tokio::fs
+pub async fn read_file_content_async(file_path: &str) -> io::Result<String> {
+    info!("Reading file content async from {}", file_path);
+    tokio::fs::read_to_string(file_path).await
+}
+
 pub(crate) fn format_response_from_db(response: &ResponseSimulator) -> String {
     info!("Formatting response from database");
     let mut formatted_response = format!(
